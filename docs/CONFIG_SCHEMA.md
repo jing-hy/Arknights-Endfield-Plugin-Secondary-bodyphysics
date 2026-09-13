@@ -181,7 +181,7 @@ idle / walk / run / sprint / zipline
 与相位对齐相关的 Runtime 行为：
 
 - 相位映射按 `2 × 2π × normalizedTime`（`kLocomotionPhaseCyclesPerLoop = 2`）：一个完整动画 loop 产生两次物理振荡（每步一次），`normalizedTime` 每前进 0.5 即一个完整振荡周期。
-- **PLL 相位跟踪**：20Hz 采样在稳定 locomotion loop 上发布相位参考（`2 × 2π × norm + phase_offset_deg`）；振荡器相位保持连续积分，每帧以时间常数 `kPhaseLockTauSec = 0.5s` 向参考做**有界收敛**（最短路径，无硬跳变）。因此步态切换时幅度/频率/相位三者各自平滑过渡。
+- **PLL 相位跟踪**：20Hz 采样在稳定 locomotion loop 上发布相位参考（`2 × 2π × norm + phase_offset_deg`）；振荡器相位保持连续积分，每帧以时间常数 `kPhaseLockTauSec = 0.5s` 向参考做**有界收敛**（最短路径，无硬跳变），并把相位误差积分到一个有界的辅助频率修正（`kPhaseCorrMaxHz = ±1.5Hz`）中——因此 `frequency_tau_sec` 调大后相位仍能快速贴合动画，不受频率平滑拖慢。步态切换时幅度/频率/相位三者各自平滑过渡。
 - 仅在 `loopStable` 的 clip（主 loop、zipline 巡索）上启用跟踪；`start`/`stop`/`_to_` 过渡 clip、jump clip、idle 无有效相位参考，跟踪关闭（相位自由积分）。
 - 启动/切角色/idle→walk 等**幅度≈0** 时刻允许一次不可见的初始硬对齐（`kPhaseSnapAmpThresholdRad = 0.02`）；幅度非零的步态切换只走平滑牵引，绝不 snap。
 
@@ -189,7 +189,7 @@ idle / walk / run / sprint / zipline
 
 - `amplitude_attack_tau_sec`：幅度进入/变化时间常数；
 - `frequency_tau_sec`：频率变化时间常数；
-- `to_idle_release_tau_sec`：明确 locomotion stop/to-idle 的释放时间常数。
+- `to_idle_release_tau_sec`：明确 locomotion stop/to-idle 的释放时间常数。**释放尾**：停止后若 envelope 仍有能量而当前 clip 不在可写步态（idle/未知 clip 窗口），衰减目标会继续写入直到幅度低于 `kReleaseTailEpsRad`（≈0.6°）再交还原生动画——调大该值不会在中途截断。释放全程**频率冻结在振荡器当前值**（最后步态的节奏，含 auto_frequency 已拟合值），只衰减幅度，不跟随 stop/idle clip 的步态频率；jump clip（jump 关闭时）仍完全原生，不写释放尾。
 
 ### jump
 

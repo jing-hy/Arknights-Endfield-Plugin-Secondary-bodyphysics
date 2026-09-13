@@ -58,9 +58,25 @@ struct SyntheticMotion {
       downTarget = 0.0f;
     }
 
-    if (c.transitionToIdle) {
+    // Release tail: a stop must decay through the WHOLE stop window — the
+    // stop/_to_idle clip AND the following idle or unknown-clip window —
+    // otherwise a slow to_idle_release_tau_sec truncates the motion
+    // mid-swing the moment the idle clip takes over.  (See also the
+    // matching write-gate bypass in MotionEngine::OnSyntheticCompute.)
+    const bool groundLoco = validGait && gait >= GaitWalk;
+    const bool releaseTail =
+        ReleaseTailActive(groundLoco, envelope.Amplitude(),
+                          envelope.DownAmplitude());
+    if (c.transitionToIdle || releaseTail) {
       ampTarget = 0.0f;   // to-idle fast release
       downTarget = 0.0f;
+      // Freeze the frequency at the oscillator's CURRENT value for the
+      // whole release.  The last gait's cadence is the motion the player
+      // saw; letting freqTarget follow the stop/idle/GaitNone clip
+      // classification (walk freq -> idle freq -> 1.5 default, plus
+      // per-gait auto-frequency fits) reads as a sudden frequency change
+      // mid-decay.  Amplitude decays to zero, frequency does not move.
+      freqTarget = envelope.Frequency();
     }
 
     bool groundMoving = IsGroundLocomotionOnsetEligible(
@@ -71,8 +87,8 @@ struct SyntheticMotion {
         c.synthetic.wasGroundLocomotionMoving,
         c.synthetic.locomotionOnsetActive);
 
-    envelope.Advance(ampTarget, downTarget, freqTarget, c.transitionToIdle,
-                     attackTau,
+    envelope.Advance(ampTarget, downTarget, freqTarget,
+                     c.transitionToIdle || releaseTail, attackTau,
                      p.envelope.toIdleReleaseTauSec,
                      p.envelope.frequencyTauSec);
 
@@ -99,6 +115,7 @@ struct SyntheticMotion {
     c.synthetic.downEnv = envelope.DownAmplitude();
     c.synthetic.freqEnv = envelope.Frequency();
     c.synthetic.phase = envelope.Phase();
+    c.synthetic.releaseTail = releaseTail;
     return angle;
   }
 

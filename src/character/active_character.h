@@ -40,6 +40,9 @@ struct SyntheticRuntime {
   Quat targetR = QuatIdentity();
   Quat targetL = QuatIdentity();
   bool targetValid = false;
+  // Release-tail write-through flag for the engine's synthetic write gate
+  // (derived fresh by SyntheticMotion every frame; never persists).
+  bool releaseTail = false;
 };
 
 struct JumpRuntime {

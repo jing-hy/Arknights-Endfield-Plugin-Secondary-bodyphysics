@@ -403,6 +403,45 @@ static void TestEnvelope() {
   // would land the phase at the reference (pi) instead.
   CHECK("no tracking = integration only, not pulled to ref",
         fabsf((float)WrapPhaseError(freeEnv.Phase(), 3.14159265358979)) > 2.0f);
+  // Release-tail detection: remaining energy without a writable locomotion
+  // gait = the to-idle decay is still in flight; settled or on-locomotion =
+  // no tail (the fail-closed boundary applies unchanged).
+  CHECK("release tail active with energy off-gait",
+        ReleaseTailActive(false, 0.1f, 0.0f) &&
+            ReleaseTailActive(false, 0.0f, 0.02f));
+  CHECK("release tail inactive when settled or on locomotion",
+        !ReleaseTailActive(false, 0.0f, 0.0f) &&
+            !ReleaseTailActive(true, 0.1f, 0.1f));
+  // User-scale to-idle tau (0.3s): the decay must be GRADUAL (still most of
+  // the amplitude shortly after the stop) and must eventually settle below
+  // the tail epsilon — the engine keeps writing this bounded decay instead
+  // of truncating it mid-swing.
+  LocomotionEnvelope tail;
+  for (int i = 0; i < 300; i++)
+    EnvAdvance(tail, target, target, 1.7f, false, 0.15f, 0.3f, 0.20f);
+  for (int i = 0; i < 5; i++)
+    EnvAdvance(tail, 0.0f, 0.0f, 1.7f, true, 0.15f, 0.3f, 0.20f);
+  float earlyTail = tail.Amplitude();
+  for (int i = 0; i < 600; i++)
+    EnvAdvance(tail, 0.0f, 0.0f, 1.7f, true, 0.15f, 0.3f, 0.20f);
+  CHECK("slow to-idle tau decays gradually, no mid-swing snap",
+        earlyTail > target * 0.5f && tail.Amplitude() < kReleaseTailEpsRad);
+  // Rate-assisted PLL: with the oscillator free-running at a WRONG
+  // frequency while tracking a reference, the positional pull alone would
+  // hold error = rate mismatch x tau forever (the frequency smoothing
+  // regression).  The integral rate correction must absorb the mismatch.
+  LocomotionEnvelope pllRate;
+  pllRate.SetPhase(0.0);
+  pllRate.SetPhaseTracking(true, 0.0);  // static reference (rate 0)
+  for (int i = 0; i < 600; i++)
+    EnvAdvance(pllRate, 0.0f, 0.0f, 1.0f, false, 0.5f, 0.015f, 0.20f);
+  CHECK("PLL rate assist converges despite frequency mismatch",
+        fabs(WrapPhaseError(pllRate.Phase(), 0.0)) < 0.5);
+  CHECK("PLL rate correction pulls toward the reference rate",
+        pllRate.phaseCorrHz <= kPhaseCorrMaxHz && pllRate.phaseCorrHz < -0.5);
+  pllRate.SetPhaseTracking(false, 0.0);
+  CHECK("tracking disengage clears the rate correction",
+        pllRate.phaseCorrHz == 0.0);
   // GaitDownAmplitude fallback semantics (0 = symmetric = up); inlined here
   // because synthetic_motion.h pulls IL2CPP deps that verify cannot link.
   CharacterProfile p0;

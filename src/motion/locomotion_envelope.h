@@ -17,6 +17,20 @@ static constexpr float kLocomotionOnsetAttackTauSec = 0.10f;
 static constexpr double kPhaseLockTauSec = 0.5;
 static constexpr float kPhaseSnapAmpThresholdRad = 0.02f;
 
+// Release tail: envelope energy below this (rad, ~0.6 deg) counts as
+// settled; the engine stops its tail write-through there (the remaining
+// snap is imperceptible).
+static constexpr float kReleaseTailEpsRad = 0.01f;
+
+// Rate-assisted PLL: integral gain (Hz per rad of phase error per second)
+// and the clamp of the auxiliary rate correction.  The positional pull
+// alone settles at error = (rate mismatch) x tau — while freqEnv is still
+// converging (a large frequency_tau_sec) that offset lasts seconds.  The
+// integral absorbs the rate mismatch independently of the frequency
+// smoothing setting; freqEnv remains the free-running (long-term) authority.
+static constexpr double kPhaseRateGainHzPerRad = 1.5;
+static constexpr double kPhaseCorrMaxHz = 1.5;
+
 // Shortest-path wrapped error to the reference in [-pi, pi).
 static inline double WrapPhaseError(double phase, double ref) {
   double err = fmod(ref - phase, 2.0 * 3.14159265358979);
@@ -49,6 +63,19 @@ static float SelectLocomotionAttackTau(
   return onsetActive ? kLocomotionOnsetAttackTauSec : normalAttackTau;
 }
 
+// Release-tail detection (pure): with no writable locomotion gait, any
+// remaining envelope energy means a to-idle decay is still in flight and
+// must keep being written until it settles — otherwise the pose snaps
+// mid-swing the moment the idle/unknown clip takes over (visible with a
+// user-raised to_idle_release_tau_sec).  Idle/None gaits are never writable
+// otherwise, so this can never start motion from rest: an unsupported or
+// never-started character has ampEnv == 0 and the tail stays off.
+static inline bool ReleaseTailActive(bool groundLocomotion, float ampRad,
+                                     float downRad) {
+  return !groundLocomotion &&
+         (ampRad > kReleaseTailEpsRad || downRad > kReleaseTailEpsRad);
+}
+
 struct LocomotionEnvelope {
   float ampEnv = 0.0f;
   float downEnv = 0.0f;   // down-amplitude channel (asymmetric gait)
@@ -56,6 +83,7 @@ struct LocomotionEnvelope {
   double phase = 0.0;
   double phaseRef = 0.0;          // PLL tracking target ([0,2pi))
   double phaseLockTauSec = 0.0;   // >0 -> bounded pull toward phaseRef
+  double phaseCorrHz = 0.0;       // PLL integral rate correction (clamped)
   FrameGate gate;  // frame-once advance (multi-instance safe)
 
   // PLL phase tracking: while valid, every Advance pulls the continuous
@@ -65,6 +93,7 @@ struct LocomotionEnvelope {
   // smoothly between gaits.
   void SetPhaseTracking(bool valid, double ref) {
     phaseRef = ref;
+    if (!valid) phaseCorrHz = 0.0;  // re-engage locks fresh
     phaseLockTauSec = valid ? kPhaseLockTauSec : 0.0;
   }
   bool PhaseTrackingActive() const { return phaseLockTauSec > 0.0; }
@@ -82,9 +111,22 @@ struct LocomotionEnvelope {
     downEnv += (downTarget - downEnv) * kA;
     freqEnv += (freqTarget - freqEnv) * kF;
     phase += 2.0 * 3.14159265358979 * freqEnv * dt;
-    if (phaseLockTauSec > 0.0)
+    if (phaseLockTauSec > 0.0) {
+      // Rate-assisted lock: integrate the wrapped error into a bounded
+      // auxiliary rate so a freqEnv that is still converging (large
+      // frequency_tau_sec) cannot hold the phase at a persistent offset.
+      phaseCorrHz += WrapPhaseError(phase, phaseRef) *
+                     (kPhaseRateGainHzPerRad * dt);
+      if (phaseCorrHz > kPhaseCorrMaxHz)
+        phaseCorrHz = kPhaseCorrMaxHz;
+      else if (phaseCorrHz < -kPhaseCorrMaxHz)
+        phaseCorrHz = -kPhaseCorrMaxHz;
       phase += WrapPhaseError(phase, phaseRef) *
-               (1.0 - exp(-dt / phaseLockTauSec));
+                   (1.0 - exp(-dt / phaseLockTauSec)) +
+               6.28318530717959 * phaseCorrHz * dt;
+    } else {
+      phaseCorrHz = 0.0;
+    }
     phase = fmod(phase, 2.0 * 3.14159265358979);
     return true;
   }
@@ -100,6 +142,7 @@ struct LocomotionEnvelope {
   void SetPhase(double ph) {
     phase = fmod(ph, 2.0 * 3.14159265358979);
     if (phase < 0.0) phase += 2.0 * 3.14159265358979;
+    phaseCorrHz = 0.0;  // fresh anchor: no stale rate
   }
 
   void Reset() {
@@ -109,6 +152,7 @@ struct LocomotionEnvelope {
     phase = 0.0;
     phaseRef = 0.0;
     phaseLockTauSec = 0.0;
+    phaseCorrHz = 0.0;
     gate = FrameGate();
   }
 };

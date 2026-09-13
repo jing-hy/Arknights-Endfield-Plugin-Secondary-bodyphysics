@@ -219,9 +219,16 @@ private:
       // Unsupported/idle clips and disabled Jump still advance the envelope
       // toward zero, but must never compose, write, or replay a synthetic
       // target. This is the fail-closed write boundary.
+      // EXCEPTION — release tail: a bounded, already-decaying to-idle
+      // target keeps writing until it settles (~0), else a slow
+      // to_idle_release_tau_sec visibly truncates mid-swing once the idle
+      // clip takes over.  Jump clips (jump feature off) stay fully native.
+      const bool releaseTail =
+          !active_.jumpDetected && active_.synthetic.releaseTail;
       if (!jumpOut.valid &&
           !CanWriteSynthetic(active_.currentGait, active_.jumpDetected,
-                             active_.profile->jump.enabled)) {
+                             active_.profile->jump.enabled) &&
+          !releaseTail) {
         active_.synthetic.baseFilter.Reset();
         active_.synthetic.targetValid = false;
         return;
@@ -229,7 +236,8 @@ private:
 
       Quat targetR, targetL;
       const bool filterNativeOscillation =
-          !jumpOwnsIntent && !active_.transitionToIdle;
+          !jumpOwnsIntent && !active_.transitionToIdle &&
+          !active_.synthetic.releaseTail;
       SyntheticMotion::ComposeTargets(active_, angle, filterNativeOscillation,
                                       targetR, targetL);
 
